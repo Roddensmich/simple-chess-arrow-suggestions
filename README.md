@@ -111,15 +111,13 @@ _DEFAULT_PORT = 9222
 
 ## Credits
 
-* Patricia engine — Adam Treat
-* python-chess — Niklas Fiekas
+* Patricia engine - [Adam Treat](https://github.com/Adam-Kulju/Patricia)
+* python-chess - [Niklas Fiekas](https://github.com/niklasf/python-chess)
+* nbeater678 - [Hersovan Deguzman](https://github.com/DRIPSCRIPTER)
 
 ---
 
 ## Disclaimer
 
 For personal learning and analysis only.
-
 Use responsibly and follow chess.com’s terms of service.
-
-```
