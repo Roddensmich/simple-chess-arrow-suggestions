@@ -61,8 +61,6 @@ class Patricia:
             stderr=subprocess.DEVNULL, text=True, bufsize=1, env=env,
         )
 
-        # FIX BUG 6: bind the reader to this queue so a dying old reader
-        # can never write into the newly-spawned engine's queue.
         q = queue.Queue()
         self._q_d = q
         def _reader(p=proc, qq=q):
@@ -181,7 +179,6 @@ class Patricia:
         is_black = board.turn == chess.BLACK
         eval_cp = best_score
 
-        # FIX BUG 2: Negate every score passed to the UI when it's Black's turn
         if is_black:
             eval_cp = -eval_cp
             engine_best = (engine_best[0], -engine_best[1])
@@ -213,7 +210,6 @@ class Patricia:
     def update_elo(self, elo: int, skill: int):
         with self._lock_d:
             self._send_raw(self._proc_d, "stop")
-            # Drain queue completely
             while not self._q_d.empty():
                 try: self._q_d.get_nowait()
                 except queue.Empty: break
@@ -231,7 +227,6 @@ class Patricia:
                     self._proc_d.kill()
                 except Exception:
                     pass
-                # FIX BUG 6: drain the old queue so any blocked consumer unblocks
                 while not self._q_d.empty():
                     try: self._q_d.get_nowait()
                     except queue.Empty: break
