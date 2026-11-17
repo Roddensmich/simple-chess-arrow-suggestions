@@ -26,7 +26,7 @@ It connects to your browser using Chrome DevTools Protocol (CDP) and draws move 
 
 - Python 3.10+
 - Patricia chess engine
-- Chrome, Brave, Edge, Opera, or Vivaldi
+- BRAVE [NO OTHER BROWSERS, JUST BRAVE]
 
 Install dependencies:
 
