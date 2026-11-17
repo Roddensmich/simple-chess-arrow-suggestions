@@ -44,7 +44,7 @@ class KING_SLAYER:
         self._running = False
         self._processing = False
         self._abort = threading.Event()
-        self._engine_lock = threading.RLock() # FIX BUG 1: RLock so apply_settings -> reset_state -> engine calls don't self-deadlock
+        self._engine_lock = threading.RLock()
 
         self._state_lock = threading.Lock()
         self._suggested_fen = "" 
@@ -59,7 +59,6 @@ class KING_SLAYER:
         self._last_queued_fen = ""
         self.time_control = args.time_control
         
-        # Stats tracking
         self._my_stats = None
         self._opp_stats = None
         self._opp_fetched = False
@@ -74,7 +73,7 @@ class KING_SLAYER:
             self.playstyle = playstyle
             self.time_control = time_control
             
-            self.reset_state() # Stop search first to prevent engine hang
+            self.reset_state()
             
             if self.engine:
                 self.engine.update_elo(elo, skill)
@@ -275,7 +274,6 @@ class KING_SLAYER:
         clock = state.get("myClock")
         self._game_over_triggered = False
 
-        # --- STATS FETCHING ---
         max_clock = max(clock or 0, state.get("oppClock") or 0)
         time_control = self._get_time_control(max_clock if max_clock > 0 else None)
         
@@ -419,10 +417,10 @@ class KING_SLAYER:
             if shallow and not stale():
                 prelim = self.engine.build_multi_result(board, shallow, [])
                 self._draw_multi_arrows(prelim, preliminary=True)
-            t_d.join(timeout=5.0) # Ensure it doesn't block forever
+            t_d.join(timeout=5.0)
             
         if t_d.is_alive():
-            self.engine.stop_search() # Force unlock if it hangs
+            self.engine.stop_search()
 
         if stale():
             with self._state_lock:
