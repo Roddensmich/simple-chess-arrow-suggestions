@@ -4,14 +4,17 @@ import queue
 import sys
 import threading
 import time
+import random
 from typing import Optional
 
 log = logging.getLogger(__name__)
 
 from CDPCLIENT import CDPClient
 from chess_ui import GUI
+from chess_stats import get_player_summary, get_rating_for_time_control
 from misc_bot import JS_GET_STATE, JS_DRAW_ARROWS, JS_CLEAR_ARROWS, JS_IS_GAME_OVER, elo_to_sf_params
 from patricia import C, Patricia, MultiResult
+from opening_book import get_book_move
 
 import chess # type: ignore
 
@@ -41,6 +44,7 @@ class KING_SLAYER:
         self._running = False
         self._processing = False
         self._abort = threading.Event()
+        self._engine_lock = threading.RLock() # FIX BUG 1: RLock so apply_settings -> reset_state -> engine calls don't self-deadlock
 
         self._state_lock = threading.Lock()
         self._suggested_fen = "" 
@@ -54,23 +58,29 @@ class KING_SLAYER:
         self._game_over_triggered = False
         self._last_queued_fen = ""
         self.time_control = args.time_control
+        
+        # Stats tracking
+        self._my_stats = None
+        self._opp_stats = None
+        self._opp_fetched = False
+        self._fetching_stats = False
 
     def apply_settings(self, elo: int, playstyle: str, time_control: str) -> None:
-        """Hot-apply new ELO, playstyle, and time control; resets analysis state."""
-        skill, auto_depth = elo_to_sf_params(elo)
-        self.elo = elo
-        self.skill = skill
-        self.depth = auto_depth
-        self.playstyle = playstyle
-        self.time_control = time_control
-        if self.engine:
-            self.engine.update_elo(elo, skill)
-            self.engine.update_playstyle(playstyle)
-        self.reset_state()
-        log.info(
-            "Settings applied: ELO=%d  playstyle=%s  depth=%d  tc=%s",
-            elo, playstyle, auto_depth, time_control,
-        )
+        with self._engine_lock:
+            skill, auto_depth = elo_to_sf_params(elo)
+            self.elo = elo
+            self.skill = skill
+            self.depth = auto_depth
+            self.playstyle = playstyle
+            self.time_control = time_control
+            
+            self.reset_state() # Stop search first to prevent engine hang
+            
+            if self.engine:
+                self.engine.update_elo(elo, skill)
+                self.engine.update_playstyle(playstyle)
+                
+        log.info("Settings applied: ELO=%d  playstyle=%s  depth=%d  tc=%s", elo, playstyle, auto_depth, time_control)
 
     def reset_state(self):
         self._analysis_gen += 1
@@ -84,13 +94,27 @@ class KING_SLAYER:
             self._last_arrows_json = ""
         self._last_queued_fen = ""
         self._clear_arrow()
+        
+        self._my_stats = None
+        self._opp_stats = None
+        self._opp_fetched = False
+        self._fetching_stats = False
+        self._game_over_triggered = False
+
         time.sleep(0.06)
         self._abort.clear()
-        if self.engine:
-            try:
-                self.engine.new_game()
-            except Exception as e:
-                log.warning("new_game() failed: %s", e)
+        
+        with self._engine_lock:
+            if self.engine:
+                try:
+                    self.engine.new_game()
+                except Exception as e:
+                    log.warning("new_game() failed: %s", e)
+                
+        if self.gui:
+            self.gui.root.after(0, lambda: self.gui._my_stats_var.set("Fetching..."))
+            self.gui.root.after(0, lambda: self.gui._opp_stats_var.set("Waiting for opponent..."))
+            
         log.info("Suggester state reset")
 
     def start(self):
@@ -122,6 +146,67 @@ class KING_SLAYER:
                     self.gui.set_status("Error", sub=str(e)[:48], dot=C["orange"])
                 time.sleep(1.0)
             time.sleep(0.15)
+
+    def _get_time_control(self, clock_seconds):
+        if clock_seconds is None: return "blitz"
+        if clock_seconds < 180: return "bullet"
+        elif clock_seconds < 480: return "blitz"
+        elif clock_seconds < 3600: return "rapid"
+        else: return "daily"
+
+    def _fetch_stats_thread(self, my_name, opp_name, opp_rating_dom, time_control):
+        try:
+            if my_name and not self._my_stats:
+                log.info("Fetching stats for %s...", my_name)
+                self._my_stats = get_player_summary(my_name)
+                
+                if self._my_stats and self._my_stats.get("ratings"):
+                    rating_block = get_rating_for_time_control(self._my_stats, time_control)
+                    user_elo = rating_block.get("current") if rating_block else None
+                    if not user_elo:
+                        user_elo = 1300
+                    
+                    elo_drop = random.randint(100, 300)
+                    target_elo = max(800, user_elo - elo_drop)
+                    log.info("Adjusted Bot ELO: %d (User: %d - Drop: %d)", target_elo, user_elo, elo_drop)
+                    
+                    with self._engine_lock:
+                        self.elo = target_elo
+                        skill, _ = elo_to_sf_params(self.elo)
+                        self.engine.update_elo(self.elo, skill)
+                    
+                if self.gui:
+                    self.gui.update_stats(self._my_stats, self._opp_stats, self.elo, time_control)
+
+            if opp_name and not self._opp_fetched:
+                log.info("Fetching stats for opponent %s (DOM Rating: %s)...", opp_name, opp_rating_dom)
+                api_stats = get_player_summary(opp_name)
+                
+                if api_stats:
+                    self._opp_stats = api_stats
+                    
+                if opp_rating_dom:
+                    if not self._opp_stats:
+                        self._opp_stats = {"ratings": {}}
+                    if "ratings" not in self._opp_stats:
+                        self._opp_stats["ratings"] = {}
+                        
+                    current_wr = self._opp_stats["ratings"].get(time_control, {}).get("win_rate")
+                    self._opp_stats["ratings"][time_control] = {
+                        "current": opp_rating_dom,
+                        "win_rate": current_wr
+                    }
+                    
+                if self._opp_stats and self._opp_stats.get("ratings"):
+                    self._opp_fetched = True
+                    if self.gui:
+                        self.gui.update_stats(self._my_stats, self._opp_stats, self.elo, time_control)
+                    log.info("Opponent stats loaded successfully.")
+                    
+        except Exception as e:
+            log.error("Failed to fetch stats: %s", e)
+        finally:
+            self._fetching_stats = False
 
     def _tick(self):
         if not self.auto_move:
@@ -160,8 +245,7 @@ class KING_SLAYER:
                     self.cdp.eval_js(JS_DRAW_ARROWS % last_json)
                     with self._state_lock:
                         self._arrow_drawn = True
-                except Exception:
-                    pass
+                except Exception: pass
 
         if not state.get("gameActive"):
             try:
@@ -173,8 +257,8 @@ class KING_SLAYER:
                             self.gui.trigger_restart()
                 else:
                     self._game_over_triggered = False
-            except Exception:
-                pass
+            except Exception: pass
+            
             with self._state_lock:
                 cached_json = self._last_arrows_json
                 self._suggested_fen = ""
@@ -190,6 +274,18 @@ class KING_SLAYER:
         active = state["active"]
         clock = state.get("myClock")
         self._game_over_triggered = False
+
+        # --- STATS FETCHING ---
+        max_clock = max(clock or 0, state.get("oppClock") or 0)
+        time_control = self._get_time_control(max_clock if max_clock > 0 else None)
+        
+        if not self._opp_fetched and not self._fetching_stats:
+            self._fetching_stats = True
+            threading.Thread(
+                target=self._fetch_stats_thread, 
+                args=(state.get("myUsername"), state.get("oppUsername"), state.get("oppRatingDOM"), time_control), 
+                daemon=True
+            ).start()
 
         if active != my_color:
             if self._processing:
@@ -217,8 +313,7 @@ class KING_SLAYER:
                     self.cdp.eval_js(JS_DRAW_ARROWS % last_json)
                     with self._state_lock:
                         self._arrow_drawn = True
-                except Exception:
-                    pass
+                except Exception: pass
             return
 
         if fen == pending:
@@ -235,10 +330,8 @@ class KING_SLAYER:
         self._clear_arrow()
 
         while True:
-            try:
-                self._analysis_queue.get_nowait()
-            except queue.Empty:
-                break
+            try: self._analysis_queue.get_nowait()
+            except queue.Empty: break
 
         self._analysis_queue.put((fen, clock, gen))
 
@@ -296,8 +389,7 @@ class KING_SLAYER:
         def _run_quick():
             try:
                 r = self.engine.analyse_quick(fen)
-                if r:
-                    shallow.extend(r)
+                if r: shallow.extend(r)
             except Exception as e:
                 log.warning("_run_quick error: %s", e)
             finally:
@@ -306,8 +398,7 @@ class KING_SLAYER:
         def _run_deep():
             try:
                 r = self.engine.analyse_deep(fen, budget_ms)
-                if r:
-                    deep.extend(r)
+                if r: deep.extend(r)
             except Exception as e:
                 log.warning("_run_deep error: %s", e)
 
@@ -328,7 +419,10 @@ class KING_SLAYER:
             if shallow and not stale():
                 prelim = self.engine.build_multi_result(board, shallow, [])
                 self._draw_multi_arrows(prelim, preliminary=True)
-            t_d.join()
+            t_d.join(timeout=5.0) # Ensure it doesn't block forever
+            
+        if t_d.is_alive():
+            self.engine.stop_search() # Force unlock if it hangs
 
         if stale():
             with self._state_lock:
@@ -351,34 +445,20 @@ class KING_SLAYER:
         arrows = []
         seen: set = set()
 
-        log.debug(
-            "candidates: brilliant=%s human=%s best=%s second=%s",
-            result.brilliant, result.human_pick, result.engine_best, result.engine_2nd
-        )
-
         def add(move_tuple, color: str, alpha: float):
-            if not move_tuple:
-                return
+            if not move_tuple: return
             uci = move_tuple[0]
-            if not uci or len(uci) < 4:
-                return
-            if uci in seen:
-                return
+            if not uci or len(uci) < 4: return
+            if uci in seen: return
             seen.add(uci)
-            arrows.append({
-                "from":  uci[:2],
-                "to":    uci[2:4],
-                "color": color,
-                "alpha": alpha,
-            })
+            arrows.append({"from": uci[:2], "to": uci[2:4], "color": color, "alpha": alpha})
 
         add(result.brilliant, _COLOR_BRILLIANT, 0.92)
         add(result.human_pick,  _COLOR_HUMAN, 0.88)
         add(result.engine_best, _COLOR_ENGINE_BEST, 0.78)
         add(result.engine_2nd, _COLOR_ENGINE_2ND, 0.62)
 
-        if not arrows:
-            return
+        if not arrows: return
 
         arrows_json = json.dumps(arrows)
         try:
@@ -392,25 +472,16 @@ class KING_SLAYER:
                 self._arrow_drawn = False
             return
 
-        if preliminary:
-            return
+        if preliminary: return
 
         primary = result.brilliant or result.human_pick or result.engine_best
-        if not primary:
-            return
+        if not primary: return
         uci, ev = primary
-        promo = (
-            f"  →  promote to {uci[4].upper()}"
-            if len(uci) == 5 else ""
-        )
+        promo = (f"  →  promote to {uci[4].upper()}" if len(uci) == 5 else "")
         tag = "★ " if result.brilliant else ""
         print(f"\033[2;31m ➜ Suggestion: {tag}{uci}{promo}  (eval {ev:+d})")
         if self.gui:
-            self.gui.set_status(
-                f"Suggest  {tag}{uci}{promo}",
-                sub=f"eval {ev:+d} ·  you move",
-                dot=C["green"],
-            )
+            self.gui.set_status(f"Suggest  {tag}{uci}{promo}", sub=f"eval {ev:+d} ·  you move", dot=C["green"])
             self.gui.push_move(uci, ev, result)
 
     def _clear_arrow(self, clear_cache: bool = True):
@@ -426,8 +497,7 @@ class KING_SLAYER:
 
         try:
             self.cdp.eval_js(JS_CLEAR_ARROWS)
-        except Exception:
-            pass
+        except Exception: pass
 
         with self._state_lock:
             self._arrow_drawn = False
@@ -436,6 +506,5 @@ class KING_SLAYER:
 
     def _cleanup(self):
         self._clear_arrow()
-        if self.engine:
-            self.engine.close()
+        if self.engine: self.engine.close()
         self.cdp.close()

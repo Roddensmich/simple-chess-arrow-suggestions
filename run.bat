@@ -9,6 +9,28 @@ if errorlevel 1 (
     exit /b 1
 )
 
+set "PF86=%ProgramFiles(x86)%"
+set "BRAVE_FOUND=0"
+if exist "%ProgramFiles%\BraveSoftware\Brave-Browser\Application\brave.exe" set "BRAVE_FOUND=1"
+if defined PF86 if exist "%PF86%\BraveSoftware\Brave-Browser\Application\brave.exe" set "BRAVE_FOUND=1"
+if exist "%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe" set "BRAVE_FOUND=1"
+if "!BRAVE_FOUND!"=="0" (
+    where brave >nul 2>&1
+    if not errorlevel 1 set "BRAVE_FOUND=1"
+)
+if "!BRAVE_FOUND!"=="0" (
+    echo.
+    echo   BRAVE BROWSER NOT FOUND
+    echo   KING SLAYER currently ONLY supports Brave Browser.
+    echo.
+    echo   Download Brave from:  https://brave.com/download/
+    echo   After installing, run this launcher again.
+    echo.
+    pause
+    exit /b 1
+)
+echo [OK] Brave browser found.
+
 set MISSING=0
 for %%p in (requests websocket chess colorama) do (
     python -c "import %%p" >nul 2>&1

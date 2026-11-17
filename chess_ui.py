@@ -5,6 +5,26 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 
 from misc_bot import PLAYSTYLES, elo_to_sf_params
 from patricia import C
+from chess_stats import get_rating_for_time_control
+
+# --- SAFE COLOR FALLBACKS ---
+# In case your local patricia.py is missing some keys, this prevents KeyErrors.
+_SAFE_C = {
+    "bg": "#0f0f0f",
+    "panel": "#161616",
+    "card": "#1a1a1a",
+    "border": "#0a0808",
+    "text": "#e8e8e8",
+    "muted": "#555555",
+    "green": "#00d26a",
+    "red": "#ff4444",
+    "blue": "#0094ff",
+    "orange": "#ffaa00",
+    "purple": "#a855f7",
+}
+for k, v in _SAFE_C.items():
+    C.setdefault(k, v)
+# ----------------------------
 
 if TYPE_CHECKING:
     from king_chess import KING_SLAYER
@@ -13,7 +33,7 @@ _TIME_CONTROLS = ["bullet", "blitz", "rapid", "classical"]
 
 
 class GUI:
-    W, H = 300, 510
+    W, H = 320, 600
 
     def __init__(self, bot: "KING_SLAYER"):
         self.bot = bot
@@ -168,6 +188,22 @@ class GUI:
         self._depth_var = tk.StringVar(value=str(self.bot.depth))
         self._lbl(depth_card, "", textvariable=self._depth_var, font=("Segoe UI", 9, "bold")).pack()
 
+        # Stats UI
+        self.stats_frame = tk.Frame(self.root, bg=C["bg"])
+        self.stats_frame.pack(fill="x", padx=10, pady=(0, 4))
+        
+        my_sc = tk.Frame(self.stats_frame, bg=C["card"], pady=4)
+        my_sc.pack(fill="x", pady=2)
+        self._lbl(my_sc, "MY STATS", fg=C["muted"], font=("Segoe UI", 7)).pack()
+        self._my_stats_var = tk.StringVar(value="Fetching...")
+        self._lbl(my_sc, "", textvariable=self._my_stats_var, font=("Segoe UI", 9, "bold"), fg=C["blue"]).pack()
+
+        opp_sc = tk.Frame(self.stats_frame, bg=C["card"], pady=4)
+        opp_sc.pack(fill="x", pady=2)
+        self._lbl(opp_sc, "OPPONENT STATS", fg=C["muted"], font=("Segoe UI", 7)).pack()
+        self._opp_stats_var = tk.StringVar(value="Waiting for opponent...")
+        self._lbl(opp_sc, "", textvariable=self._opp_stats_var, font=("Segoe UI", 9, "bold"), fg=C["orange"]).pack()
+
         tf = tk.Frame(self.root, bg=C["bg"])
         tf.pack(fill="x", padx=10, pady=(0, 4))
         self._tc_btns: Dict[str, tk.Button] = {}
@@ -212,6 +248,33 @@ class GUI:
             self.root, "made by nbeater678 [@saddigup]",
             fg=C["muted"], font=("Segoe UI", 7),
         ).pack(pady=(6, 3))
+
+    def update_stats(self, my_stats, opp_stats, target_elo, time_control="blitz"):
+        def _do():
+            self._elo_var.set(str(target_elo))
+            
+            if my_stats:
+                r = get_rating_for_time_control(my_stats, time_control)
+                if r:
+                    wr = r.get('win_rate')
+                    wr_str = f" ({wr}%)" if wr is not None else ""
+                    self._my_stats_var.set(f"{time_control.capitalize()}: {r.get('current', '?')}{wr_str}")
+                else:
+                    self._my_stats_var.set("Unrated")
+            elif self._my_stats_var.get() == "Fetching...":
+                self._my_stats_var.set("Unrated / Not Found")
+            
+            if opp_stats:
+                r = get_rating_for_time_control(opp_stats, time_control)
+                if r:
+                    wr = r.get('win_rate')
+                    wr_str = f" ({wr}%)" if wr is not None else ""
+                    self._opp_stats_var.set(f"{time_control.capitalize()}: {r.get('current', '?')}{wr_str}")
+                else:
+                    self._opp_stats_var.set("Unrated")
+            elif self._opp_stats_var.get() == "Waiting for opponent..." or self._opp_stats_var.get() == "Fetching...":
+                self._opp_stats_var.set("Unrated")
+        self.root.after(0, _do)
 
     def _start_elo_edit(self):
         if self._elo_editing:
@@ -399,6 +462,10 @@ class GUI:
                 self._stats["games"].set(str(games_snapshot))
                 self._auto_txt.set("⏸  PAUSE SUGGESTIONS")
                 self._auto_btn.configure(bg=C["green"], activebackground=C["green"])
+                
+                # Clear Stats panels
+                self._my_stats_var.set("Fetching...")
+                self._opp_stats_var.set("Waiting for opponent...")
 
             self.root.after(0, _reset_ui)
             self.set_status("Ready", sub="Restarted — waiting for your turn", dot=C["green"])
