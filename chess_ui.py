@@ -7,8 +7,6 @@ from misc_bot import PLAYSTYLES, elo_to_sf_params
 from patricia import C
 from chess_stats import get_rating_for_time_control
 
-# --- SAFE COLOR FALLBACKS ---
-# In case your local patricia.py is missing some keys, this prevents KeyErrors.
 _SAFE_C = {
     "bg": "#0f0f0f",
     "panel": "#161616",
@@ -24,7 +22,6 @@ _SAFE_C = {
 }
 for k, v in _SAFE_C.items():
     C.setdefault(k, v)
-# ----------------------------
 
 if TYPE_CHECKING:
     from king_chess import KING_SLAYER
@@ -188,7 +185,6 @@ class GUI:
         self._depth_var = tk.StringVar(value=str(self.bot.depth))
         self._lbl(depth_card, "", textvariable=self._depth_var, font=("Segoe UI", 9, "bold")).pack()
 
-        # Stats UI
         self.stats_frame = tk.Frame(self.root, bg=C["bg"])
         self.stats_frame.pack(fill="x", padx=10, pady=(0, 4))
         
@@ -426,7 +422,6 @@ class GUI:
         self.root.after(0, _do)
 
     def trigger_restart(self):
-        """Called from the bot thread when game-over is detected."""
         self.root.after(0, self._restart)
 
     def _toggle(self):
@@ -463,7 +458,6 @@ class GUI:
                 self._auto_txt.set("⏸  PAUSE SUGGESTIONS")
                 self._auto_btn.configure(bg=C["green"], activebackground=C["green"])
                 
-                # Clear Stats panels
                 self._my_stats_var.set("Fetching...")
                 self._opp_stats_var.set("Waiting for opponent...")
 
